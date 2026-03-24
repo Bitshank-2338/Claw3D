@@ -12,7 +12,7 @@ import * as THREE from 'three';
 
 import { NEXORA_COLORS_THREE, AGENT_THEMES, AgentRole } from '@/lib/nexora/themes';
 import { NEXORA_ROOMS, RoomId } from '@/lib/nexora/rooms';
-import { BaseAvatar } from './avatars';
+import { NexoraAvatar } from './avatars';
 import { DataStreams, HoloPanel, HoloGlobe, HoloTable, AmbientParticles, BioluminescentParticles } from './effects';
 import { NexoraAgent, DEFAULT_AGENTS, AgentState } from './types';
 
@@ -352,7 +352,7 @@ function Agents({ agents, onAgentClick, selectedAgentId }: AgentsProps) {
   return (
     <group>
       {agents.map((agent) => (
-        <BaseAvatar
+        <NexoraAvatar
           key={agent.id}
           role={agent.role}
           state={agent.state}
