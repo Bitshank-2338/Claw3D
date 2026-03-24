@@ -1,0 +1,293 @@
+/**
+ * NEXORA NEURAL HQ - Theme Styles
+ * Dark glassmorphism + cyberpunk aesthetic
+ */
+
+/* ============================================================
+   BASE THEME
+   ============================================================ */
+
+:root {
+  /* Backgrounds */
+  --nexora-void-black: #0A0A0F;
+  --nexora-deep-space: #12121A;
+  
+  /* Agent Colors */
+  --nexora-pm-blue: #3B82F6;
+  --nexora-developer-cyan: #06B6D4;
+  --nexora-security-red: #EF4444;
+  --nexora-sales-gold: #F59E0B;
+  --nexora-hr-ops-purple: #8B5CF6;
+  --nexora-life-admin-teal: #14B8A6;
+  
+  /* UI Colors */
+  --nexora-glass-white: rgba(255, 255, 255, 0.125);
+  --nexora-glass-border: rgba(255, 255, 255, 0.1);
+  --nexora-neon-cyan: #06B6D4;
+  --nexora-neon-purple: #8B5CF6;
+  --nexora-neon-gold: #F59E0B;
+  --nexora-alert-red: #EF4444;
+  --nexora-success-green: #10B981;
+  
+  /* Text */
+  --nexora-text-primary: #F8FAFC;
+  --nexora-text-secondary: #94A3B8;
+  --nexora-text-muted: #64748B;
+  
+  /* Shadows & Effects */
+  --nexora-glow-cyan: 0 0 20px rgba(6, 182, 212, 0.25);
+  --nexora-glow-purple: 0 0 20px rgba(139, 92, 246, 0.25);
+  --nexora-glow-gold: 0 0 20px rgba(245, 158, 11, 0.25);
+  --nexora-glow-red: 0 0 20px rgba(239, 68, 68, 0.25);
+  --nexora-glow-teal: 0 0 20px rgba(20, 184, 166, 0.25);
+  --nexora-glow-blue: 0 0 20px rgba(59, 130, 246, 0.25);
+}
+
+/* ============================================================
+   GLASSMORPHISM COMPONENTS
+   ============================================================ */
+
+.nexora-glass {
+  background: var(--nexora-glass-white);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--nexora-glass-border);
+  border-radius: 12px;
+}
+
+.nexora-glass-panel {
+  background: rgba(18, 18, 26, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ============================================================
+   NEON GLOW EFFECTS
+   ============================================================ */
+
+.nexora-glow-cyan {
+  box-shadow: var(--nexora-glow-cyan);
+}
+
+.nexora-glow-purple {
+  box-shadow: var(--nexora-glow-purple);
+}
+
+.nexora-glow-gold {
+  box-shadow: var(--nexora-glow-gold);
+}
+
+.nexora-glow-red {
+  box-shadow: var(--nexora-glow-red);
+}
+
+.nexora-glow-teal {
+  box-shadow: var(--nexora-glow-teal);
+}
+
+.nexora-glow-blue {
+  box-shadow: var(--nexora-glow-blue);
+}
+
+/* Animated glow pulse */
+@keyframes nexora-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.nexora-pulse {
+  animation: nexora-pulse 2s ease-in-out infinite;
+}
+
+/* ============================================================
+   AGENT BADGES
+   ============================================================ */
+
+.nexora-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--nexora-glass-white);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--nexora-glass-border);
+}
+
+.nexora-agent-badge--pm {
+  border-color: var(--nexora-pm-blue);
+  box-shadow: var(--nexora-glow-blue);
+}
+
+.nexora-agent-badge--developer {
+  border-color: var(--nexora-developer-cyan);
+  box-shadow: var(--nexora-glow-cyan);
+}
+
+.nexora-agent-badge--security {
+  border-color: var(--nexora-security-red);
+  box-shadow: var(--nexora-glow-red);
+}
+
+.nexora-agent-badge--sales {
+  border-color: var(--nexora-sales-gold);
+  box-shadow: var(--nexora-glow-gold);
+}
+
+.nexora-agent-badge--hr-ops {
+  border-color: var(--nexora-hr-ops-purple);
+  box-shadow: var(--nexora-glow-purple);
+}
+
+.nexora-agent-badge--life-admin {
+  border-color: var(--nexora-life-admin-teal);
+  box-shadow: var(--nexora-glow-teal);
+}
+
+/* ============================================================
+   HOLOGRAPHIC UI ELEMENTS
+   ============================================================ */
+
+.nexora-holo-card {
+  position: relative;
+  background: linear-gradient(
+    135deg,
+    rgba(6, 182, 212, 0.1) 0%,
+    rgba(139, 92, 246, 0.1) 100%
+  );
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.nexora-holo-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.1),
+    transparent
+  );
+  animation: nexora-scan 3s ease-in-out infinite;
+}
+
+@keyframes nexora-scan {
+  0% {
+    left: -100%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* ============================================================
+   DATA STREAM EFFECTS
+   ============================================================ */
+
+.nexora-data-stream {
+  position: relative;
+  overflow: hidden;
+}
+
+.nexora-data-stream::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(6, 182, 212, 0.03) 2px,
+    rgba(6, 182, 212, 0.03) 4px
+  );
+  pointer-events: none;
+  animation: nexora-stream 0.5s linear infinite;
+}
+
+@keyframes nexora-stream {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(4px);
+  }
+}
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+
+.nexora-title {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: linear-gradient(
+    90deg,
+    var(--nexora-neon-cyan),
+    var(--nexora-neon-purple)
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.nexora-subtitle {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--nexora-text-secondary);
+}
+
+.nexora-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.875em;
+}
+
+/* ============================================================
+   ROOM-SPECIFIC THEMES
+   ============================================================ */
+
+[data-room="nexus"] {
+  --room-accent: var(--nexora-neon-cyan);
+  --room-glow: var(--nexora-glow-cyan);
+}
+
+[data-room="citadel"] {
+  --room-accent: var(--nexora-security-red);
+  --room-glow: var(--nexora-glow-red);
+}
+
+[data-room="outreach-matrix"] {
+  --room-accent: var(--nexora-sales-gold);
+  --room-glow: var(--nexora-glow-gold);
+}
+
+[data-room="synapse"] {
+  --room-accent: var(--nexora-hr-ops-purple);
+  --room-glow: var(--nexora-glow-purple);
+}
+
+[data-room="zen-garden"] {
+  --room-accent: var(--nexora-life-admin-teal);
+  --room-glow: var(--nexora-glow-teal);
+}

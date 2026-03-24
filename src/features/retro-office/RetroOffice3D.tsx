@@ -1880,7 +1880,7 @@ export function RetroOffice3D({
   monitorAgentId = null,
   monitorByAgentId = {},
   githubSkill = null,
-  officeTitle = "Luke Headquarters",
+  officeTitle = "NEXORA NEURAL HQ",
   officeTitleLoaded = false,
   voiceRepliesEnabled = false,
   voiceRepliesVoiceId = null,
