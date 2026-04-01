@@ -6,6 +6,14 @@ import type {
 } from "@/lib/office/standup/types";
 import type { AgentAvatarProfile } from "@/lib/avatars/profile";
 import { normalizeAgentAvatarProfile } from "@/lib/avatars/profile";
+import {
+  defaultTaskBoardPreference,
+  isTaskBoardSource,
+  isTaskBoardStatus,
+  type TaskBoardCard,
+  type TaskBoardPreference,
+  type TaskBoardPreferencePatch,
+} from "@/features/office/tasks/types";
 
 export type StudioGatewaySettings = {
   url: string;
@@ -70,6 +78,13 @@ export type StudioOfficePreference = {
   remoteOfficePresenceUrl: string;
   remoteOfficeGatewayUrl: string;
   remoteOfficeToken: string;
+  companyName: string;
+  companyPrompt: string;
+  companyImprovedBrief: string;
+  companySummary: string;
+  companyGeneratedAt: string | null;
+  companyRoleTitles: string[];
+  companyPlanJson: string;
 };
 
 export type StudioOfficePreferencePublic = {
@@ -80,6 +95,13 @@ export type StudioOfficePreferencePublic = {
   remoteOfficePresenceUrl: string;
   remoteOfficeGatewayUrl: string;
   remoteOfficeTokenConfigured: boolean;
+  companyName: string;
+  companyPrompt: string;
+  companyImprovedBrief: string;
+  companySummary: string;
+  companyGeneratedAt: string | null;
+  companyRoleTitles: string[];
+  companyPlanJson: string;
 };
 
 export type StudioOfficePreferencePatch = {
@@ -90,6 +112,13 @@ export type StudioOfficePreferencePatch = {
   remoteOfficePresenceUrl?: string | null;
   remoteOfficeGatewayUrl?: string | null;
   remoteOfficeToken?: string | null;
+  companyName?: string | null;
+  companyPrompt?: string | null;
+  companyImprovedBrief?: string | null;
+  companySummary?: string | null;
+  companyGeneratedAt?: string | null;
+  companyRoleTitles?: string[] | null;
+  companyPlanJson?: string | null;
 };
 
 export type StudioDeskAssignments = Record<string, string>;
@@ -112,6 +141,10 @@ export type StandupJiraConfigPublic = Omit<StandupJiraConfig, "apiToken"> & {
   apiTokenConfigured: boolean;
 };
 
+export type StudioTaskBoardPreference = TaskBoardPreference;
+export type StudioTaskBoardPreferencePublic = TaskBoardPreference;
+export type StudioTaskBoardPreferencePatch = TaskBoardPreferencePatch;
+
 export type StudioSettings = {
   version: 1;
   gateway: StudioGatewaySettings | null;
@@ -122,12 +155,14 @@ export type StudioSettings = {
   voiceReplies: Record<string, StudioVoiceRepliesPreference>;
   office: Record<string, StudioOfficePreference>;
   standup?: Record<string, StudioStandupPreference>;
+  taskBoard?: Record<string, StudioTaskBoardPreference>;
 };
 
 export type StudioSettingsPublic = Omit<StudioSettings, "gateway" | "office" | "standup"> & {
   gateway: StudioGatewaySettingsPublic | null;
   office: Record<string, StudioOfficePreferencePublic>;
   standup?: Record<string, StudioStandupPreferencePublic>;
+  taskBoard?: Record<string, StudioTaskBoardPreferencePublic>;
 };
 
 export type StudioSettingsPatch = {
@@ -139,6 +174,7 @@ export type StudioSettingsPatch = {
   voiceReplies?: Record<string, StudioVoiceRepliesPreferencePatch | null>;
   office?: Record<string, StudioOfficePreferencePatch | null>;
   standup?: Record<string, StudioStandupPreferencePatch | null>;
+  taskBoard?: Record<string, StudioTaskBoardPreferencePatch | null>;
 };
 
 const SETTINGS_VERSION = 1 as const;
@@ -278,6 +314,9 @@ export const defaultStudioStandupPreference = (): StudioStandupPreference => ({
   manualByAgentId: {},
 });
 
+export const defaultStudioTaskBoardPreference =
+  (): StudioTaskBoardPreference => defaultTaskBoardPreference();
+
 const normalizeVoiceReplySpeed = (value: unknown, fallback: number = 1): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(1.2, Math.max(0.7, value));
@@ -291,6 +330,70 @@ const normalizeOptionalIsoString = (
   if (typeof value !== "string") return fallback;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+};
+
+const normalizeTaskBoardNotes = (value: unknown, fallback: string[] = []) => {
+  if (!Array.isArray(value)) return [...fallback];
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 24);
+};
+
+const normalizeTaskBoardCard = (
+  value: unknown,
+  fallback?: TaskBoardCard
+): TaskBoardCard => {
+  const nowIso = new Date().toISOString();
+  const record = isRecord(value) ? value : {};
+  return {
+    id: coerceString(record.id) || fallback?.id || "",
+    title: coerceString(record.title) || fallback?.title || "Untitled task",
+    description: coerceString(record.description) || fallback?.description || "",
+    status: isTaskBoardStatus(record.status) ? record.status : (fallback?.status ?? "todo"),
+    source: isTaskBoardSource(record.source)
+      ? record.source
+      : (fallback?.source ?? "claw3d_manual"),
+    sourceEventId:
+      normalizeOptionalIsoString(record.sourceEventId, fallback?.sourceEventId ?? null) ??
+      null,
+    assignedAgentId:
+      normalizeSelectedAgentId(record.assignedAgentId, fallback?.assignedAgentId ?? null) ?? null,
+    createdAt:
+      normalizeOptionalIsoString(record.createdAt, fallback?.createdAt ?? nowIso) ?? nowIso,
+    updatedAt:
+      normalizeOptionalIsoString(record.updatedAt, fallback?.updatedAt ?? nowIso) ?? nowIso,
+    playbookJobId:
+      normalizeSelectedAgentId(record.playbookJobId, fallback?.playbookJobId ?? null) ?? null,
+    runId: normalizeSelectedAgentId(record.runId, fallback?.runId ?? null) ?? null,
+    channel: normalizeSelectedAgentId(record.channel, fallback?.channel ?? null) ?? null,
+    externalThreadId:
+      normalizeSelectedAgentId(record.externalThreadId, fallback?.externalThreadId ?? null) ??
+      null,
+    lastActivityAt:
+      normalizeOptionalIsoString(record.lastActivityAt, fallback?.lastActivityAt ?? null) ?? null,
+    notes: normalizeTaskBoardNotes(record.notes, fallback?.notes ?? []),
+    isArchived:
+      typeof record.isArchived === "boolean" ? record.isArchived : (fallback?.isArchived ?? false),
+    isInferred:
+      typeof record.isInferred === "boolean" ? record.isInferred : (fallback?.isInferred ?? false),
+  };
+};
+
+const normalizeTaskBoardPreference = (
+  value: unknown,
+  fallback: StudioTaskBoardPreference = defaultStudioTaskBoardPreference()
+): StudioTaskBoardPreference => {
+  const record = isRecord(value) ? value : {};
+  const rawCards = Array.isArray(record.cards) ? record.cards : fallback.cards;
+  return {
+    cards: rawCards
+      .map((entry) => normalizeTaskBoardCard(entry))
+      .filter((entry) => entry.id.length > 0),
+    selectedCardId:
+      normalizeSelectedAgentId(record.selectedCardId, fallback.selectedCardId) ?? null,
+  };
 };
 
 const DEFAULT_OFFICE_TITLE = "Luke Headquarters";
@@ -346,6 +449,17 @@ const normalizeRemoteOfficeGatewayUrl = (value: unknown) => {
   }
 };
 
+const normalizeCompanyField = (value: unknown) => coerceString(value).slice(0, 10_000);
+
+const normalizeCompanyRoleTitles = (value: unknown, fallback: string[] = []) => {
+  if (!Array.isArray(value)) return fallback;
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .slice(0, 32);
+};
+
 export const defaultStudioOfficePreference = (): StudioOfficePreference => ({
   title: DEFAULT_OFFICE_TITLE,
   remoteOfficeEnabled: false,
@@ -354,6 +468,13 @@ export const defaultStudioOfficePreference = (): StudioOfficePreference => ({
   remoteOfficePresenceUrl: "",
   remoteOfficeGatewayUrl: "",
   remoteOfficeToken: "",
+  companyName: "",
+  companyPrompt: "",
+  companyImprovedBrief: "",
+  companySummary: "",
+  companyGeneratedAt: null,
+  companyRoleTitles: [],
+  companyPlanJson: "",
 });
 
 export const defaultStudioOfficePreferencePublic =
@@ -365,6 +486,13 @@ export const defaultStudioOfficePreferencePublic =
     remoteOfficePresenceUrl: "",
     remoteOfficeGatewayUrl: "",
     remoteOfficeTokenConfigured: false,
+    companyName: "",
+    companyPrompt: "",
+    companyImprovedBrief: "",
+    companySummary: "",
+    companyGeneratedAt: null,
+    companyRoleTitles: [],
+    companyPlanJson: "",
   });
 
 export const sanitizeStudioOfficePreference = (
@@ -377,6 +505,13 @@ export const sanitizeStudioOfficePreference = (
   remoteOfficePresenceUrl: value.remoteOfficePresenceUrl,
   remoteOfficeGatewayUrl: value.remoteOfficeGatewayUrl,
   remoteOfficeTokenConfigured: value.remoteOfficeToken.length > 0,
+  companyName: value.companyName,
+  companyPrompt: value.companyPrompt,
+  companyImprovedBrief: value.companyImprovedBrief,
+  companySummary: value.companySummary,
+  companyGeneratedAt: value.companyGeneratedAt,
+  companyRoleTitles: value.companyRoleTitles,
+  companyPlanJson: value.companyPlanJson,
 });
 
 const normalizeStandupScheduleConfig = (
@@ -470,6 +605,19 @@ const normalizeStandup = (
     standup[gatewayKey] = normalizeStandupPreference(standupRaw);
   }
   return standup;
+};
+
+const normalizeTaskBoard = (
+  value: unknown
+): Record<string, StudioTaskBoardPreference> => {
+  if (!isRecord(value)) return {};
+  const taskBoard: Record<string, StudioTaskBoardPreference> = {};
+  for (const [gatewayKeyRaw, taskBoardRaw] of Object.entries(value)) {
+    const gatewayKey = normalizeGatewayKey(gatewayKeyRaw);
+    if (!gatewayKey) continue;
+    taskBoard[gatewayKey] = normalizeTaskBoardPreference(taskBoardRaw);
+  }
+  return taskBoard;
 };
 
 const normalizeFocusedPreference = (
@@ -669,6 +817,21 @@ const normalizeOfficePreference = (
       value.remoteOfficeToken === null
         ? ""
         : coerceString(value.remoteOfficeToken) || fallback.remoteOfficeToken,
+    companyName: normalizeCompanyField(value.companyName ?? fallback.companyName),
+    companyPrompt: normalizeCompanyField(value.companyPrompt ?? fallback.companyPrompt),
+    companyImprovedBrief: normalizeCompanyField(
+      value.companyImprovedBrief ?? fallback.companyImprovedBrief
+    ),
+    companySummary: normalizeCompanyField(value.companySummary ?? fallback.companySummary),
+    companyGeneratedAt: normalizeOptionalIsoString(
+      value.companyGeneratedAt,
+      fallback.companyGeneratedAt
+    ),
+    companyRoleTitles: normalizeCompanyRoleTitles(
+      value.companyRoleTitles,
+      fallback.companyRoleTitles
+    ),
+    companyPlanJson: normalizeCompanyField(value.companyPlanJson ?? fallback.companyPlanJson),
   };
 };
 
@@ -693,6 +856,7 @@ export const defaultStudioSettings = (): StudioSettings => ({
   voiceReplies: {},
   office: {},
   standup: {},
+  taskBoard: {},
 });
 
 export const sanitizeStudioGatewaySettings = (
@@ -720,6 +884,13 @@ export const sanitizeStandupPreference = (
   jira: sanitizeStandupJiraConfig(value.jira),
 });
 
+export const sanitizeTaskBoardPreference = (
+  value: StudioTaskBoardPreference
+): StudioTaskBoardPreferencePublic => ({
+  cards: value.cards.map((card) => ({ ...card, notes: [...card.notes] })),
+  selectedCardId: value.selectedCardId,
+});
+
 export const sanitizeStudioSettings = (
   value: StudioSettings,
 ): StudioSettingsPublic => ({
@@ -737,6 +908,12 @@ export const sanitizeStudioSettings = (
       sanitizeStandupPreference(preference),
     ]),
   ),
+  taskBoard: Object.fromEntries(
+    Object.entries(value.taskBoard ?? {}).map(([gatewayKey, preference]) => [
+      gatewayKey,
+      sanitizeTaskBoardPreference(preference),
+    ]),
+  ),
 });
 
 export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
@@ -749,6 +926,7 @@ export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
   const voiceReplies = normalizeVoiceReplies(raw.voiceReplies);
   const office = normalizeOffice(raw.office);
   const standup = normalizeStandup(raw.standup);
+  const taskBoard = normalizeTaskBoard(raw.taskBoard);
   return {
     version: SETTINGS_VERSION,
     gateway,
@@ -759,6 +937,7 @@ export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
     voiceReplies,
     office,
     standup,
+    taskBoard,
   };
 };
 
@@ -775,6 +954,7 @@ export const mergeStudioSettings = (
   const nextVoiceReplies = { ...current.voiceReplies };
   const nextOffice = { ...current.office };
   const nextStandup = { ...(current.standup ?? {}) };
+  const nextTaskBoard = { ...(current.taskBoard ?? {}) };
   if (patch.focused) {
     for (const [keyRaw, value] of Object.entries(patch.focused)) {
       const key = normalizeGatewayKey(keyRaw);
@@ -945,6 +1125,28 @@ export const mergeStudioSettings = (
       );
     }
   }
+  if (patch.taskBoard) {
+    for (const [gatewayKeyRaw, taskBoardPatch] of Object.entries(patch.taskBoard)) {
+      const gatewayKey = normalizeGatewayKey(gatewayKeyRaw);
+      if (!gatewayKey) continue;
+      if (taskBoardPatch === null) {
+        delete nextTaskBoard[gatewayKey];
+        continue;
+      }
+      const fallback =
+        nextTaskBoard[gatewayKey] ?? defaultStudioTaskBoardPreference();
+      nextTaskBoard[gatewayKey] = normalizeTaskBoardPreference(
+        {
+          ...fallback,
+          ...taskBoardPatch,
+          cards: Array.isArray(taskBoardPatch.cards)
+            ? taskBoardPatch.cards
+            : fallback.cards,
+        },
+        fallback
+      );
+    }
+  }
   return {
     version: SETTINGS_VERSION,
     gateway: nextGateway ?? null,
@@ -955,6 +1157,7 @@ export const mergeStudioSettings = (
     voiceReplies: nextVoiceReplies,
     office: nextOffice,
     standup: nextStandup,
+    taskBoard: nextTaskBoard,
   };
 };
 
@@ -1040,4 +1243,13 @@ export const resolveStandupPreference = (
   const gatewayKey = normalizeGatewayKey(gatewayUrl);
   if (!gatewayKey) return defaultStudioStandupPreference();
   return settings.standup?.[gatewayKey] ?? defaultStudioStandupPreference();
+};
+
+export const resolveTaskBoardPreference = (
+  settings: StudioSettings | StudioSettingsPublic,
+  gatewayUrl: string
+): StudioTaskBoardPreference => {
+  const gatewayKey = normalizeGatewayKey(gatewayUrl);
+  if (!gatewayKey) return defaultStudioTaskBoardPreference();
+  return settings.taskBoard?.[gatewayKey] ?? defaultStudioTaskBoardPreference();
 };

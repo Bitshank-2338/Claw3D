@@ -26,7 +26,10 @@ import {
   createStudioSettingsCoordinator,
   type StudioSettingsLoadOptions,
 } from "@/lib/studio/coordinator";
-import { resolveDeskAssignments } from "@/lib/studio/settings";
+import {
+  resolveDeskAssignments,
+  resolveOfficePreferencePublic,
+} from "@/lib/studio/settings";
 import {
   createGatewayAgent,
   renameGatewayAgent,
@@ -69,7 +72,11 @@ import {
   applyCreateAgentBootstrapPermissions,
   CREATE_AGENT_DEFAULT_PERMISSIONS,
 } from "@/features/agents/operations/createAgentBootstrapOperation";
-import { deleteAgentRecordViaStudio } from "@/features/agents/operations/deleteAgentOperation";
+import {
+  deleteAgentRecordViaStudio,
+  deleteAgentViaStudio,
+  trashAgentStateViaStudio,
+} from "@/features/agents/operations/deleteAgentOperation";
 import { planAgentSettingsMutation } from "@/features/agents/operations/agentSettingsMutationWorkflow";
 import {
   executeHistorySyncCommands,
@@ -95,7 +102,10 @@ import {
   type GatewayModelChoice,
 } from "@/lib/gateway/models";
 import type { GatewayModelPolicySnapshot } from "@/lib/gateway/models";
-import type { AgentAvatarProfile } from "@/lib/avatars/profile";
+import {
+  createDefaultAgentAvatarProfile,
+  type AgentAvatarProfile,
+} from "@/lib/avatars/profile";
 import {
   createEmptyPersonalityDraft,
   serializePersonalityFiles,
@@ -107,11 +117,30 @@ import {
   HQSidebar,
   type HQSidebarTab,
 } from "@/features/office/components/HQSidebar";
+import { CompanyBuilderModal } from "@/features/company-builder/components/CompanyBuilderModal";
+import {
+  buildGenerateCompanyPlanPrompt,
+  buildImproveCompanyBriefPrompt,
+  buildStoredCompanySnapshot,
+  parseCompanyPlanFromAssistantText,
+} from "@/features/company-builder/planning";
+import {
+  buildCompanyRolePermissionsDraft,
+  resolveCompanyPlanningAgent,
+  runOpenClawPlanningPrompt,
+} from "@/features/company-builder/operations/companyBuilderGateway";
+import { runCompanyBootstrapOperation } from "@/features/company-builder/operations/companyBootstrapOperation";
+import type {
+  CompanyBuilderInput,
+  CompanyBuilderPlan,
+} from "@/features/company-builder/types";
 import { AnalyticsPanel } from "@/features/office/components/panels/AnalyticsPanel";
 import { HistoryPanel } from "@/features/office/components/panels/HistoryPanel";
 import { InboxPanel } from "@/features/office/components/panels/InboxPanel";
+import { KanbanDisabledPanel } from "@/features/office/components/panels/KanbanDisabledPanel";
 import { PlaybooksPanel } from "@/features/office/components/panels/PlaybooksPanel";
 import { SkillsMarketplaceModal } from "@/features/office/components/panels/SkillsMarketplaceModal";
+import { TaskBoardPanel } from "@/features/office/components/panels/TaskBoardPanel";
 import { JukeboxPanel } from "@/features/spotify-jukebox/components/JukeboxPanel";
 import { JukeboxDisabledPanel } from "@/features/spotify-jukebox/components/JukeboxDisabledPanel";
 import { executeBrowserJukeboxCommand } from "@/features/spotify-jukebox/agentBridge";
@@ -125,6 +154,7 @@ import { useRemoteOfficeLayout } from "@/features/office/hooks/useRemoteOfficeLa
 import { useOfficeSkillsMarketplace } from "@/features/office/hooks/useOfficeSkillsMarketplace";
 import { useOfficeStandupController } from "@/features/office/hooks/useOfficeStandupController";
 import { useRunLog } from "@/features/office/hooks/useRunLog";
+import { useTaskBoardController } from "@/features/office/tasks/useTaskBoardController";
 import {
   OnboardingWizard,
   useOnboardingState,
@@ -853,6 +883,8 @@ export function OfficeScreen({
   const [openClawConsoleCopyStatus, setOpenClawConsoleCopyStatus] = useState<
     "idle" | "copied" | "error"
   >("idle");
+  const taskBoardEventHandlerRef = useRef<(event: EventFrame) => void>(() => {});
+  const taskBoardRefreshRef = useRef<() => Promise<void>>(async () => {});
   const [officeTriggerState, setOfficeTriggerState] = useState(() =>
     createOfficeAnimationTriggerState(),
   );
@@ -902,6 +934,19 @@ export function OfficeScreen({
   const [createAgentModalError, setCreateAgentModalError] = useState<string | null>(
     null,
   );
+  const [companyBuilderOpen, setCompanyBuilderOpen] = useState(false);
+  const [companyBuilderNonce, setCompanyBuilderNonce] = useState(0);
+  const [companyBuilderBusy, setCompanyBuilderBusy] = useState(false);
+  const [companyBuilderError, setCompanyBuilderError] = useState<string | null>(null);
+  const [companyBuilderStatusLine, setCompanyBuilderStatusLine] = useState<string | null>(null);
+  const [companyBuilderInput, setCompanyBuilderInput] = useState<CompanyBuilderInput>({
+    businessDescription: "",
+    improvedBrief: "",
+  });
+  const [lastCompanyPlan, setLastCompanyPlan] = useState<CompanyBuilderPlan | null>(null);
+  const [companyCreatedSignal, setCompanyCreatedSignal] = useState(0);
+  const [createdCompanyName, setCreatedCompanyName] = useState<string | null>(null);
+  const [officeCameraCenterSignal, setOfficeCameraCenterSignal] = useState(0);
   const [createAgentBlock, setCreateAgentBlock] =
     useState<CreateAgentBlockState | null>(null);
   const [deleteAgentBlock, setDeleteAgentBlock] =
@@ -923,6 +968,18 @@ export function OfficeScreen({
   const [gatewayModels, setGatewayModels] = useState<GatewayModelChoice[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  const [kanbanInstallPromptOpen, setKanbanInstallPromptOpen] = useState(false);
+  const [kanbanInstallProgress, setKanbanInstallProgress] = useState<{
+    active: boolean;
+    percent: number;
+    message: string;
+    error: string | null;
+  }>({
+    active: false,
+    percent: 0,
+    message: "",
+    error: null,
+  });
   const [danceUntilByAgentId, setDanceUntilByAgentId] = useState<Record<string, number>>({});
   const initJukeboxStore = useJukeboxStore((state) => state.init);
   const jukeboxToken = useJukeboxStore((state) => state.token);
@@ -1044,11 +1101,16 @@ export function OfficeScreen({
   const showOnboardingWizard = showOnboarding || forceShowOnboarding;
   const handleOpenOnboarding = useCallback(() => {
     resetOnboarding();
+    setCompanyCreatedSignal(0);
+    setCreatedCompanyName(null);
     setForceShowOnboarding(true);
   }, [resetOnboarding]);
   const handleCompleteOnboarding = useCallback(() => {
     completeOnboarding();
+    setCompanyCreatedSignal(0);
+    setCreatedCompanyName(null);
     setForceShowOnboarding(false);
+    setOfficeCameraCenterSignal((current) => current + 1);
   }, [completeOnboarding]);
 
   const handleAvatarProfileSave = useCallback(
@@ -1205,6 +1267,49 @@ export function OfficeScreen({
       } catch {
         if (cancelled) return;
         setDeskAssignmentByDeskUid({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayUrl, loadStudioSettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const gatewayKey = gatewayUrl.trim();
+    if (!gatewayKey) {
+      setCompanyBuilderInput({
+        businessDescription: "",
+        improvedBrief: "",
+      });
+      setLastCompanyPlan(null);
+      return;
+    }
+    void (async () => {
+      try {
+        const settings = await loadStudioSettings({ maxAgeMs: 30_000 });
+        if (!settings || cancelled) return;
+        const officePreference = resolveOfficePreferencePublic(settings, gatewayKey);
+        setCompanyBuilderInput({
+          businessDescription: officePreference.companyPrompt,
+          improvedBrief: officePreference.companyImprovedBrief,
+        });
+        if (officePreference.companyPlanJson.trim()) {
+          try {
+            setLastCompanyPlan(
+              JSON.parse(officePreference.companyPlanJson) as CompanyBuilderPlan,
+            );
+          } catch (error) {
+            console.error("Failed to parse saved company plan.", error);
+            setLastCompanyPlan(null);
+          }
+        } else {
+          setLastCompanyPlan(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to load company builder preference.", error);
+        }
       }
     })();
     return () => {
@@ -1384,6 +1489,163 @@ export function OfficeScreen({
     setCreateAgentWizardNonce((current) => current + 1);
     setCreateAgentWizardOpen(true);
   }, []);
+  const plannerAgent = useMemo(
+    () =>
+      resolveCompanyPlanningAgent({
+        agents: state.agents,
+        preferredAgentId: selectedChatAgentId ?? state.selectedAgentId,
+      }),
+    [selectedChatAgentId, state.agents, state.selectedAgentId],
+  );
+  const persistCompanyBuilderSnapshot = useCallback(
+    (input: CompanyBuilderInput, plan: CompanyBuilderPlan) => {
+      const gatewayKey = gatewayUrl.trim();
+      if (!gatewayKey) return;
+      const snapshot = buildStoredCompanySnapshot({
+        prompt: input.businessDescription,
+        improvedBrief: input.improvedBrief,
+        plan,
+      });
+      settingsCoordinator.schedulePatch(
+        {
+          office: {
+            [gatewayKey]: {
+              companyName: snapshot.companyName,
+              companyPrompt: snapshot.prompt,
+              companyImprovedBrief: snapshot.improvedBrief,
+              companySummary: snapshot.summary,
+              companyGeneratedAt: snapshot.generatedAt,
+              companyRoleTitles: snapshot.roleTitles,
+              companyPlanJson: snapshot.planJson,
+            },
+          },
+        },
+        0,
+      );
+      setCompanyBuilderInput(input);
+      setLastCompanyPlan(plan);
+    },
+    [gatewayUrl, settingsCoordinator],
+  );
+  const handleOpenCompanyBuilder = useCallback(() => {
+    setCompanyBuilderError(null);
+    setCompanyBuilderStatusLine(null);
+    setCreatedCompanyName(null);
+    setCompanyBuilderNonce((current) => current + 1);
+    setCompanyBuilderOpen(true);
+  }, []);
+  const handleCloseCompanyBuilder = useCallback(() => {
+    if (companyBuilderBusy) return;
+    setCompanyBuilderOpen(false);
+    setCompanyBuilderError(null);
+    setCompanyBuilderStatusLine(null);
+  }, [companyBuilderBusy]);
+  const handleClearCompanyBuilder = useCallback(() => {
+    const gatewayKey = gatewayUrl.trim();
+    setCompanyBuilderInput({
+      businessDescription: "",
+      improvedBrief: "",
+    });
+    setLastCompanyPlan(null);
+    setCompanyBuilderError(null);
+    setCompanyBuilderStatusLine(null);
+    if (!gatewayKey) return;
+    settingsCoordinator.schedulePatch(
+      {
+        office: {
+          [gatewayKey]: {
+            companyName: "",
+            companyPrompt: "",
+            companyImprovedBrief: "",
+            companySummary: "",
+            companyGeneratedAt: "",
+            companyRoleTitles: [],
+            companyPlanJson: "",
+          },
+        },
+      },
+      0,
+    );
+  }, [gatewayUrl, settingsCoordinator]);
+  const runCompanyBuilderAiTask = useCallback(
+    async (prompt: string, statusText: string) => {
+      if (status !== "connected") {
+        throw new Error("Connect to OpenClaw before using the company builder.");
+      }
+      const livePlannerAgent = resolveCompanyPlanningAgent({
+        agents: stateRef.current.agents,
+        preferredAgentId: selectedChatAgentId ?? state.selectedAgentId,
+      });
+      if (!livePlannerAgent) {
+        throw new Error("Create or load at least one agent before using AI suggestions.");
+      }
+      setCompanyBuilderStatusLine(statusText);
+      return runOpenClawPlanningPrompt({
+        client,
+        dispatch,
+        agent: livePlannerAgent,
+        getAgent: (agentId) =>
+          stateRef.current.agents.find((entry) => entry.agentId === agentId) ?? null,
+        prompt,
+      });
+    },
+    [client, dispatch, selectedChatAgentId, state.selectedAgentId, status],
+  );
+  const handleImproveCompanyBrief = useCallback(
+    async (brief: string) => {
+      setCompanyBuilderBusy(true);
+      setCompanyBuilderError(null);
+      try {
+        const improvedBrief = await runCompanyBuilderAiTask(
+          buildImproveCompanyBriefPrompt(brief),
+          "Improving your company brief with OpenClaw.",
+        );
+        setCompanyBuilderInput((current) => ({
+          ...current,
+          businessDescription: brief,
+          improvedBrief,
+        }));
+        return improvedBrief;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to improve the company brief.";
+        setCompanyBuilderError(message);
+        throw error;
+      } finally {
+        setCompanyBuilderBusy(false);
+        setCompanyBuilderStatusLine(null);
+      }
+    },
+    [runCompanyBuilderAiTask],
+  );
+  const handleGenerateCompanyPlan = useCallback(
+    async (brief: string) => {
+      setCompanyBuilderBusy(true);
+      setCompanyBuilderError(null);
+      try {
+        const response = await runCompanyBuilderAiTask(
+          buildGenerateCompanyPlanPrompt(brief),
+          "Generating your AI company structure with OpenClaw.",
+        );
+        const parsedPlan = parseCompanyPlanFromAssistantText(response);
+        const nextInput: CompanyBuilderInput = {
+          businessDescription: companyBuilderInput.businessDescription,
+          improvedBrief: brief === companyBuilderInput.businessDescription ? "" : brief,
+        };
+        persistCompanyBuilderSnapshot(nextInput, parsedPlan);
+        return parsedPlan;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to generate the company plan.";
+        setCompanyBuilderError(message);
+        throw error;
+      } finally {
+        setCompanyBuilderBusy(false);
+        setCompanyBuilderStatusLine(null);
+      }
+    },
+    [companyBuilderInput.businessDescription, persistCompanyBuilderSnapshot, runCompanyBuilderAiTask],
+  );
   const clearDeletedAgentUiState = useCallback((agentId: string) => {
     setSelectedChatAgentId((current) => (current === agentId ? null : current));
     setAgentEditorAgentId((current) => (current === agentId ? null : current));
@@ -1403,6 +1665,141 @@ export function OfficeScreen({
       return next;
     });
   }, []);
+  const handleCreateCompanyFromPlan = useCallback(
+    async (params: { input: CompanyBuilderInput; plan: CompanyBuilderPlan }) => {
+      if (status !== "connected") {
+        const message = "Connect to OpenClaw before creating the company.";
+        setCompanyBuilderError(message);
+        throw new Error(message);
+      }
+      const existingAgentIds = stateRef.current.agents.map((entry) => entry.agentId);
+      const shouldSkipWorkspaceCleanupError = (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        return (
+          message.includes("Permission denied") ||
+          message.includes("OPENCLAW_GATEWAY_SSH_TARGET") ||
+          message.includes("Invalid gateway URL") ||
+          message.includes("Gateway URL is missing")
+        );
+      };
+      const logDeleteError = (message: string, error: unknown) => {
+        if (
+          message.startsWith("Failed to move agent workspace/state into trash.") &&
+          shouldSkipWorkspaceCleanupError(error)
+        ) {
+          return;
+        }
+        console.error(message, error);
+      };
+      setCompanyBuilderBusy(true);
+      setCompanyBuilderError(null);
+      try {
+        await runCompanyBootstrapOperation({
+          input: params.input,
+          plan: params.plan,
+          existingAgentIds,
+          deleteExistingAgent: async (agentId) => {
+            try {
+              await deleteAgentViaStudio({
+                client,
+                agentId,
+                logError: logDeleteError,
+              });
+            } catch (error) {
+              if (!shouldSkipWorkspaceCleanupError(error)) {
+                throw error;
+              }
+              await deleteAgentRecordViaStudio({
+                client,
+                agentId,
+                logError: logDeleteError,
+              });
+            }
+          },
+          clearReusedAgentState: async (agentId) => {
+            try {
+              await trashAgentStateViaStudio({ agentId });
+            } catch (error) {
+              if (!shouldSkipWorkspaceCleanupError(error)) {
+                throw error;
+              }
+            }
+          },
+          renameAgent: async (agentId, name) => {
+            await renameGatewayAgent({ client, agentId, name });
+            dispatch({ type: "updateAgent", agentId, patch: { name } });
+          },
+          onExistingAgentDeleted: (agentId) => {
+            clearDeletedAgentUiState(agentId);
+            dispatch({ type: "removeAgent", agentId });
+          },
+          createAgent: async (name) => createGatewayAgent({ client, name }),
+          writeAgentFiles: async (agentId, files) => {
+            await writeGatewayAgentFiles({
+              client,
+              agentId,
+              files,
+            });
+          },
+          saveAvatar: (agentId) => {
+            handleAvatarProfileSave(
+              agentId,
+              createDefaultAgentAvatarProfile(randomUUID()),
+            );
+          },
+          loadAgents: () => loadAgents({ forceSettings: true }),
+          findAgentById: (agentId) => {
+            const liveAgent =
+              stateRef.current.agents.find((entry) => entry.agentId === agentId) ?? null;
+            if (!liveAgent?.sessionKey) return null;
+            return {
+              agentId: liveAgent.agentId,
+              sessionKey: liveAgent.sessionKey,
+            };
+          },
+          resetAgentSession: async (_agentId, sessionKey) => {
+            await client.call("sessions.reset", { key: sessionKey });
+          },
+          applyPermissions: async (agentId, sessionKey, commandMode) => {
+            await applyCreateAgentBootstrapPermissions({
+              client,
+              agentId,
+              sessionKey,
+              draft: buildCompanyRolePermissionsDraft(commandMode),
+              loadAgents: () => loadAgents({ forceSettings: true }),
+            });
+          },
+          persistSnapshot: persistCompanyBuilderSnapshot,
+          setOfficeTitle,
+          selectAgent: (agentId) => {
+            dispatch({ type: "selectAgent", agentId });
+            setSelectedChatAgentId(agentId);
+          },
+          setStatusLine: setCompanyBuilderStatusLine,
+        });
+        setCreatedCompanyName(params.plan.companyName);
+        setCompanyCreatedSignal((current) => current + 1);
+        setCompanyBuilderOpen(false);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to create the company.";
+        setCompanyBuilderError(message);
+        throw error;
+      } finally {
+        setCompanyBuilderBusy(false);
+      }
+    },
+    [
+      clearDeletedAgentUiState,
+      client,
+      dispatch,
+      handleAvatarProfileSave,
+      loadAgents,
+      persistCompanyBuilderSnapshot,
+      setOfficeTitle,
+      status,
+    ],
+  );
   const createAgentStatusLine = useMemo(() => {
     if (!createAgentBlock) return null;
     if (createAgentBlock.phase === "queued") {
@@ -2088,6 +2485,7 @@ export function OfficeScreen({
       ) {
         return;
       }
+      taskBoardEventHandlerRef.current(event);
       runtimeHandler.handleEvent(event);
     });
     const unsubscribeGap = client.onGap(() => {
@@ -2096,6 +2494,7 @@ export function OfficeScreen({
         settingsMaxAgeMs: 30_000,
         silent: true,
       });
+      void taskBoardRefreshRef.current();
     });
 
     return () => {
@@ -2292,6 +2691,21 @@ export function OfficeScreen({
     gatewayUrl,
     agents: standupAgentSnapshots,
   });
+  const taskBoard = useTaskBoardController({
+    gatewayUrl,
+    settingsCoordinator,
+    client,
+    status,
+    agents: state.agents,
+    runLog,
+    standup: standupController,
+  });
+  const ingestTaskBoardEvent = taskBoard.ingestGatewayEvent;
+  taskBoardEventHandlerRef.current = ingestTaskBoardEvent;
+  taskBoardRefreshRef.current = async () => {
+    await taskBoard.refreshSharedTasks();
+    await taskBoard.refreshRemoteTasks();
+  };
   const handleMarketplaceGymStart = useCallback((agentId: string) => {
     setMarketplaceGymHoldByAgentId((previous) => ({
       ...previous,
@@ -2419,6 +2833,14 @@ export function OfficeScreen({
           Boolean(immediateGymHoldByAgentId[agent.agentId]),
         ]),
       );
+      const prevKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((key) => previous[key] === next[key])
+      ) {
+        return previous;
+      }
       return next;
     });
   }, [immediateGymHoldByAgentId, state.agents]);
@@ -3557,6 +3979,19 @@ export function OfficeScreen({
       }) ?? null,
     [marketplace.skillsReport],
   );
+  const taskManagerSkill = useMemo<SkillStatusEntry | null>(
+    () =>
+      marketplace.skillsReport?.skills.find((skill) => {
+        const normalizedKey = skill.skillKey.trim().toLowerCase();
+        const normalizedName = skill.name.trim().toLowerCase();
+        return normalizedKey === "task-manager" || normalizedName === "task-manager";
+      }) ?? null,
+    [marketplace.skillsReport],
+  );
+  const taskManagerReady = useMemo(
+    () => (taskManagerSkill ? deriveSkillReadinessState(taskManagerSkill) === "ready" : false),
+    [taskManagerSkill],
+  );
   const soundclawReady = useMemo(
     () => (soundclawSkill ? deriveSkillReadinessState(soundclawSkill) === "ready" : false),
     [soundclawSkill]
@@ -3714,6 +4149,7 @@ export function OfficeScreen({
       <section className="relative h-full min-h-0 min-w-0 overflow-hidden">
         <RetroOffice3D
           agents={allVisibleAgents}
+          officeCenterSignal={officeCameraCenterSignal}
           animationState={officeAnimationState}
           deskAssignmentByDeskUid={deskAssignmentByDeskUid}
           githubReviewAgentId={githubReviewAgentId}
@@ -3725,6 +4161,7 @@ export function OfficeScreen({
           monitorAgentId={monitorAgentId}
           monitorByAgentId={monitorByAgentId}
           githubSkill={githubSkill}
+          taskManagerEnabled={taskManagerReady}
           soundclawEnabled={soundclawReady}
           officeTitle={officeTitle}
           officeTitleLoaded={officeTitleLoaded}
@@ -3818,6 +4255,34 @@ export function OfficeScreen({
           onJukeboxInteract={() => {
             setJukeboxOpen(true);
           }}
+          onKanbanInteract={() => {
+            setKanbanInstallPromptOpen(true);
+          }}
+          taskBoardAgents={state.agents}
+          taskBoardCardsByStatus={taskBoard.cardsByStatus}
+          taskBoardSelectedCard={taskBoard.selectedCard}
+          taskBoardActiveRuns={taskBoard.activeRuns}
+          taskBoardCronJobs={taskBoard.cronJobs}
+          taskBoardCronLoading={taskBoard.cronLoading}
+          taskBoardCronError={
+            taskBoard.sharedTasksError ?? taskBoard.gatewayTasksError ?? taskBoard.cronError
+          }
+          taskBoardCaptureDebug={showOpenClawConsole ? taskBoard.taskCaptureDebug : undefined}
+          preferredKanbanAgentId={selectedChatAgentId ?? state.selectedAgentId}
+          onTaskBoardCreateCard={() => {
+            taskBoard.createManualCard();
+          }}
+          onTaskBoardMoveCard={taskBoard.moveCard}
+          onTaskBoardSelectCard={(cardId) => {
+            taskBoard.selectCard(cardId);
+          }}
+          onTaskBoardUpdateCard={taskBoard.updateCard}
+          onTaskBoardDeleteCard={taskBoard.removeCard}
+          onTaskBoardRefreshCronJobs={() => {
+            void taskBoard.refreshSharedTasks();
+            void taskBoard.refreshRemoteTasks();
+            void taskBoard.refreshCronJobs();
+          }}
         />
         {jukeboxOpen ? (
           soundclawReady ? (
@@ -3835,6 +4300,75 @@ export function OfficeScreen({
               }}
             />
           )
+        ) : null}
+        {kanbanInstallPromptOpen ? (
+          <KanbanDisabledPanel
+            onClose={() => {
+              if (kanbanInstallProgress.active) {
+                return;
+              }
+              setKanbanInstallPromptOpen(false);
+              setKanbanInstallProgress({
+                active: false,
+                percent: 0,
+                message: "",
+                error: null,
+              });
+            }}
+            onInstall={() => {
+              const targetAgentId =
+                (selectedChatAgentId ?? state.selectedAgentId ?? state.agents[0]?.agentId ?? "")
+                  .trim() || null;
+              setKanbanInstallProgress({
+                active: true,
+                percent: 8,
+                message: "Starting task-manager installation.",
+                error: null,
+              });
+              void (async () => {
+                try {
+                  await marketplace.handleInstallPackagedSkillAndEnable({
+                    skillKey: "task-manager",
+                    agentId: targetAgentId,
+                    onProgress: ({ percent, message }) => {
+                      setKanbanInstallProgress({
+                        active: true,
+                        percent,
+                        message,
+                        error: null,
+                      });
+                    },
+                  });
+                  setKanbanInstallProgress({
+                    active: true,
+                    percent: 100,
+                    message: "Refreshing task-manager state in Claw3D.",
+                    error: null,
+                  });
+                  setKanbanInstallPromptOpen(false);
+                  setKanbanInstallProgress({
+                    active: false,
+                    percent: 0,
+                    message: "",
+                    error: null,
+                  });
+                } catch (error) {
+                  setKanbanInstallProgress((current) => ({
+                    ...current,
+                    active: false,
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : "Failed to install task-manager.",
+                  }));
+                }
+              })();
+            }}
+            installing={kanbanInstallProgress.active}
+            progressPercent={kanbanInstallProgress.percent}
+            progressMessage={kanbanInstallProgress.message}
+            errorMessage={kanbanInstallProgress.error}
+          />
         ) : null}
       </section>
 
@@ -3857,6 +4391,15 @@ export function OfficeScreen({
                   }}
                 >
                   Add Agent
+                </button>
+                <button
+                  type="button"
+                  className="ui-btn-secondary px-3 py-2 text-xs font-semibold tracking-[0.05em] text-foreground"
+                  onClick={() => {
+                    handleOpenCompanyBuilder();
+                  }}
+                >
+                  Build Company
                 </button>
                 <button
                   type="button"
@@ -3893,6 +4436,7 @@ export function OfficeScreen({
           onTabChange={setActiveSidebarTab}
           onOpenMarketplace={() => setMarketplaceOpen(true)}
           onAddAgent={handleOpenCreateAgentWizard}
+          onOpenCompanyBuilder={handleOpenCompanyBuilder}
           inboxPanel={
             <InboxPanel
               agents={state.agents}
@@ -3909,6 +4453,33 @@ export function OfficeScreen({
               onSelectAgent={(agentId) => {
                 handleOpenAgentChat(agentId);
                 setActiveSidebarTab("history");
+              }}
+            />
+          }
+          kanbanPanel={
+            <TaskBoardPanel
+              agents={state.agents}
+              cardsByStatus={taskBoard.cardsByStatus}
+              selectedCard={taskBoard.selectedCard}
+              activeRuns={taskBoard.activeRuns}
+              cronJobs={taskBoard.cronJobs}
+              cronLoading={taskBoard.cronLoading}
+              cronError={
+                taskBoard.sharedTasksError ?? taskBoard.gatewayTasksError ?? taskBoard.cronError
+              }
+              taskCaptureDebug={showOpenClawConsole ? taskBoard.taskCaptureDebug : undefined}
+              onCreateCard={() => {
+                taskBoard.createManualCard();
+                setActiveSidebarTab("kanban");
+              }}
+              onMoveCard={taskBoard.moveCard}
+              onSelectCard={taskBoard.selectCard}
+              onUpdateCard={taskBoard.updateCard}
+              onDeleteCard={taskBoard.removeCard}
+              onRefreshCronJobs={() => {
+                void taskBoard.refreshSharedTasks();
+                void taskBoard.refreshRemoteTasks();
+                void taskBoard.refreshCronJobs();
               }}
             />
           }
@@ -3954,6 +4525,7 @@ export function OfficeScreen({
 
       {showOnboardingWizard ? (
         <OnboardingWizard
+          key={companyCreatedSignal > 0 ? `onboarding-company-created-${companyCreatedSignal}` : "onboarding-default"}
           gatewayConnected={status === "connected"}
           agentCount={state.agents.length}
           gatewayUrl={gatewayUrl}
@@ -3964,6 +4536,15 @@ export function OfficeScreen({
             void connect();
           }}
           onComplete={handleCompleteOnboarding}
+          onOpenCompanyBuilder={handleOpenCompanyBuilder}
+          initialStep={companyCreatedSignal > 0 ? "complete" : "welcome"}
+          initialCompletedSteps={
+            companyCreatedSignal > 0
+              ? ["welcome", "prerequisites", "connect", "agents", "company", "complete"]
+              : undefined
+          }
+          createdCompanyName={createdCompanyName}
+          companyCreated={companyCreatedSignal > 0}
           connectionError={gatewayError}
           connecting={status === "connecting"}
         />
@@ -4252,9 +4833,6 @@ export function OfficeScreen({
                     chatController.stopBusyAgentId === focusedChatAgent.agentId
                   }
                   onLoadMoreHistory={() => {}}
-                  onOpenSettings={() => {
-                    router.push("/office");
-                  }}
                   onNewSession={() =>
                     chatController.handleNewSession(focusedChatAgent.agentId)
                   }
@@ -4473,7 +5051,7 @@ export function OfficeScreen({
         />
       ) : null}
       <AgentCreateWizardModal
-        key={createAgentWizardNonce}
+        key={`create-agent-${createAgentWizardNonce}`}
         open={createAgentWizardOpen}
         suggestedName={`Agent ${state.agents.length + 1}`}
         busy={createAgentBusy}
@@ -4482,6 +5060,23 @@ export function OfficeScreen({
         onClose={handleCloseCreateAgentWizard}
         onCreateAgent={handleCreateAgentFromIdentity}
         onFinishWizard={handleFinishCreateAgentAvatar}
+      />
+      <CompanyBuilderModal
+        key={`company-builder-${companyBuilderNonce}`}
+        open={companyBuilderOpen}
+        connected={status === "connected"}
+        agentCount={state.agents.length}
+        plannerAgentName={plannerAgent?.name ?? null}
+        busy={companyBuilderBusy}
+        error={companyBuilderError}
+        statusLine={companyBuilderStatusLine}
+        initialInput={companyBuilderInput}
+        initialPlan={lastCompanyPlan}
+        onClose={handleCloseCompanyBuilder}
+        onClear={handleClearCompanyBuilder}
+        onImproveBrief={handleImproveCompanyBrief}
+        onGeneratePlan={handleGenerateCompanyPlan}
+        onCreateCompany={handleCreateCompanyFromPlan}
       />
     </main>
   );

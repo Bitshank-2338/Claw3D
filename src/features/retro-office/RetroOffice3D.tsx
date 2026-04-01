@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  type ComponentProps,
   memo,
   Suspense,
   useCallback,
@@ -29,6 +30,7 @@ import * as THREE from "three";
 import { SettingsPanel } from "@/features/office/components/panels/SettingsPanel";
 import { AtmImmersiveScreen } from "@/features/office/screens/AtmImmersiveScreen";
 import { GithubImmersiveScreen } from "@/features/office/screens/GithubImmersiveScreen";
+import { KanbanImmersiveScreen } from "@/features/office/screens/KanbanImmersiveScreen";
 import {
   PhoneBoothImmersiveScreen,
   type PhoneCallStep,
@@ -39,6 +41,8 @@ import {
 } from "@/features/office/screens/SmsBoothImmersiveScreen";
 import { StandupImmersiveScreen } from "@/features/office/screens/StandupImmersiveScreen";
 import type { OfficeUsageAnalyticsParams } from "@/features/office/hooks/useOfficeUsageAnalyticsViewModel";
+import type { AgentState } from "@/features/agents/state/store";
+import type { CronJobSummary } from "@/lib/cron/types";
 import { buildMockPhoneCallScenario } from "@/lib/office/call/mock";
 import type { MockPhoneCallScenario } from "@/lib/office/call/types";
 import { buildMockTextMessageScenario } from "@/lib/office/text/mock";
@@ -47,6 +51,10 @@ import type { OfficeDeskMonitor } from "@/lib/office/deskMonitor";
 import type { OfficeAnimationState } from "@/lib/office/eventTriggers";
 import type { StandupMeeting } from "@/lib/office/standup/types";
 import type { SkillStatusEntry } from "@/lib/skills/types";
+import type {
+  TaskBoardCard,
+  TaskBoardStatus,
+} from "@/features/office/tasks/types";
 import { extractSpeechImage } from "@/lib/text/speech-image";
 import { MonitorImmersiveContent as MonitorImmersiveOverlay } from "@/features/retro-office/overlays/MonitorImmersiveContent";
 import {
@@ -72,6 +80,7 @@ import {
 import {
   ensureOfficeAtm,
   ensureOfficeGymRoom,
+  ensureOfficeKanbanBoard,
   ensureOfficePhoneBooth,
   ensureOfficePingPongTable,
   ensureOfficeQaLab,
@@ -209,7 +218,6 @@ import {
   SpotlightEffect as SceneSpotlightEffect,
 } from "@/features/retro-office/systems/sceneRuntime";
 import {
-  DeskNameplates as DeskNameplateOverlay,
   HeatmapSystem as AgentHeatmapSystem,
   TrailSystem as AgentTrailSystem,
 } from "@/features/retro-office/systems/visualSystems";
@@ -362,6 +370,12 @@ const PALETTE: PaletteEntry[] = [
   { type: "water_cooler", label: "Water", icon: "💧", defaults: {} },
   { type: "atm", label: "ATM", icon: "🏧", defaults: { facing: 270 } },
   { type: "jukebox", label: "Jukebox", icon: "🎵", defaults: { facing: 0 } },
+  {
+    type: "kanban_board",
+    label: "Kanban Board",
+    icon: "📌",
+    defaults: { w: 130, h: 65, facing: 90 },
+  },
   {
     type: "whiteboard",
     label: "Whiteboard",
@@ -1828,10 +1842,11 @@ function useAgentTick(
         agent.status === "working" && agent.state !== "sitting"
           ? baseSpeed * WORKING_WALK_SPEED_MULTIPLIER
           : baseSpeed;
-      // Move toward the first waypoint; fall back to the raw target when empty.
+      // Move toward the first waypoint. An empty path means astar found no route —
+      // the agent stays put instead of walking through walls toward the raw target.
       const path = agent.path ?? [];
-      const wpX = path.length > 0 ? path[0].x : agent.targetX;
-      const wpY = path.length > 0 ? path[0].y : agent.targetY;
+      const wpX = path.length > 0 ? path[0].x : agent.x;
+      const wpY = path.length > 0 ? path[0].y : agent.y;
       const dx = wpX - agent.x,
         dy = wpY - agent.y;
       const dist = Math.hypot(dx, dy);
@@ -2295,6 +2310,7 @@ const getAgentInitials = (name: string | null | undefined): string => {
 
 export function RetroOffice3D({
   agents,
+  officeCenterSignal = 0,
   animationState = null,
   readOnly = false,
   storageNamespace = "default",
@@ -2314,6 +2330,7 @@ export function RetroOffice3D({
   monitorAgentId = null,
   monitorByAgentId = EMPTY_MONITOR_MAP,
   githubSkill = null,
+  taskManagerEnabled = false,
   soundclawEnabled = false,
   officeTitle = "Luke Headquarters",
   officeTitleLoaded = false,
@@ -2363,8 +2380,31 @@ export function RetroOffice3D({
   onQaLabDismiss,
   onOpenGithubSkillSetup,
   onJukeboxInteract,
+  onKanbanInteract,
+  taskBoardAgents = [],
+  taskBoardCardsByStatus = {
+    todo: [],
+    in_progress: [],
+    blocked: [],
+    review: [],
+    done: [],
+  },
+  taskBoardSelectedCard = null,
+  taskBoardActiveRuns = [],
+  taskBoardCronJobs = [],
+  taskBoardCronLoading = false,
+  taskBoardCronError = null,
+  taskBoardCaptureDebug,
+  preferredKanbanAgentId = null,
+  onTaskBoardCreateCard,
+  onTaskBoardMoveCard,
+  onTaskBoardSelectCard,
+  onTaskBoardUpdateCard,
+  onTaskBoardDeleteCard,
+  onTaskBoardRefreshCronJobs,
 }: {
   agents: OfficeAgent[];
+  officeCenterSignal?: number;
   animationState?: Pick<
     OfficeAnimationState,
     | "cleaningCues"
@@ -2395,6 +2435,7 @@ export function RetroOffice3D({
   monitorAgentId?: string | null;
   monitorByAgentId?: OfficeDeskMonitorMap;
   githubSkill?: SkillStatusEntry | null;
+  taskManagerEnabled?: boolean;
   soundclawEnabled?: boolean;
   officeTitle?: string;
   officeTitleLoaded?: boolean;
@@ -2450,10 +2491,44 @@ export function RetroOffice3D({
   onQaLabDismiss?: () => void;
   onOpenGithubSkillSetup?: () => void;
   onJukeboxInteract?: () => void;
+  onKanbanInteract?: () => void;
+  taskBoardAgents?: AgentState[];
+  taskBoardCardsByStatus?: Record<TaskBoardStatus, TaskBoardCard[]>;
+  taskBoardSelectedCard?: TaskBoardCard | null;
+  taskBoardActiveRuns?: Array<{
+    runId: string;
+    agentId: string;
+    label: string;
+  }>;
+  taskBoardCronJobs?: CronJobSummary[];
+  taskBoardCronLoading?: boolean;
+  taskBoardCronError?: string | null;
+  taskBoardCaptureDebug?: ComponentProps<
+    typeof KanbanImmersiveScreen
+  >["taskCaptureDebug"];
+  preferredKanbanAgentId?: string | null;
+  onTaskBoardCreateCard?: () => void;
+  onTaskBoardMoveCard?: (cardId: string, status: TaskBoardStatus) => void;
+  onTaskBoardSelectCard?: (cardId: string | null) => void;
+  onTaskBoardUpdateCard?: (
+    cardId: string,
+    patch: Partial<TaskBoardCard>,
+  ) => void;
+  onTaskBoardDeleteCard?: (cardId: string) => void;
+  onTaskBoardRefreshCronJobs?: () => void;
 }) {
   const resolvedCleaningCues = animationState?.cleaningCues ?? cleaningCues;
   const resolvedDanceUntilByAgentId =
     animationState?.danceUntilByAgentId ?? EMPTY_NUMBER_RECORD;
+  const kanbanDeskTaskCount = useMemo(
+    () =>
+      Object.entries(taskBoardCardsByStatus).reduce(
+        (total, [status, cards]) =>
+          status === "done" ? total : total + cards.length,
+        0,
+      ),
+    [taskBoardCardsByStatus],
+  );
   const resolvedDeskHoldByAgentId =
     animationState?.deskHoldByAgentId ?? deskHoldByAgentId;
   const resolvedGymHoldByAgentId =
@@ -2471,20 +2546,24 @@ export function RetroOffice3D({
       : EMPTY_BOOLEAN_RECORD);
   const resolvedJukeboxHoldByAgentId =
     animationState?.jukeboxHoldByAgentId ?? EMPTY_BOOLEAN_RECORD;
-  const isJukeboxActive = Object.values(resolvedJukeboxHoldByAgentId).some(Boolean);
+  const isJukeboxActive = Object.values(resolvedJukeboxHoldByAgentId).some(
+    Boolean,
+  );
 
   const [furniture, setFurniture] = useState<FurnitureItem[]>(() =>
-    ensureOfficeJukebox(
-      ensureOfficeQaLab(
-        ensureOfficeGymRoom(
-          ensureOfficeServerRoom(
-            ensureOfficePhoneBooth(
-              ensureOfficeSmsBooth(
-                ensureOfficeAtm(
-                  ensureOfficePingPongTable(
-                    (
-                      loadFurniture(storageNamespace) ?? materializeDefaults()
-                    ).filter((item) => !isRetiredPingPongLamp(item)),
+    ensureOfficeKanbanBoard(
+      ensureOfficeJukebox(
+        ensureOfficeQaLab(
+          ensureOfficeGymRoom(
+            ensureOfficeServerRoom(
+              ensureOfficePhoneBooth(
+                ensureOfficeSmsBooth(
+                  ensureOfficeAtm(
+                    ensureOfficePingPongTable(
+                      (
+                        loadFurniture(storageNamespace) ?? materializeDefaults()
+                      ).filter((item) => !isRetiredPingPongLamp(item)),
+                    ),
                   ),
                 ),
               ),
@@ -2533,6 +2612,7 @@ export function RetroOffice3D({
   const [spaceDown, setSpaceDown] = useState(false);
   const [spaceDragging, setSpaceDragging] = useState(false);
   const [standupBoardOpen, setStandupBoardOpen] = useState(false);
+  const [activeKanbanUid, setActiveKanbanUid] = useState<string | null>(null);
   const [agentRosterOpen, setAgentRosterOpen] = useState(false);
   const autoOpenedStandupIdRef = useRef<string | null>(null);
   // Idea 1 (original): hovered agent for tooltip overlay.
@@ -2546,6 +2626,8 @@ export function RetroOffice3D({
     x: number;
     y: number;
   } | null>(null);
+  const [deskActionUid, setDeskActionUid] = useState<string | null>(null);
+  const [deskAssignPickerOpen, setDeskAssignPickerOpen] = useState(false);
   // New Idea 3: speech bubble agent IDs.
   const [speechAgentIds, setSpeechAgentIds] = useState<Set<string>>(new Set());
   const statusFeedEvents = useMemo(
@@ -2602,6 +2684,7 @@ export function RetroOffice3D({
   const followAgentIdRef = useRef<string | null>(null);
   const prevMonitorAgentIdRef = useRef<string | null>(null);
   const prevAtmUidRef = useRef<string | null>(null);
+  const prevKanbanUidRef = useRef<string | null>(null);
   const prevSmsBoothViewRef = useRef<string | null>(null);
   const prevPhoneBoothViewRef = useRef<string | null>(null);
   const prevGithubViewRef = useRef<string | null>(null);
@@ -2901,6 +2984,20 @@ export function RetroOffice3D({
         : null,
     [activeAtmUid, furniture],
   );
+  const activeKanbanBoard = useMemo(
+    () =>
+      activeKanbanUid
+        ? (furniture.find(
+            (item) =>
+              item._uid === activeKanbanUid && item.type === "kanban_board",
+          ) ?? null)
+        : null,
+    [activeKanbanUid, furniture],
+  );
+  const kanbanBoardItem = useMemo(
+    () => furniture.find((item) => item.type === "kanban_board") ?? null,
+    [furniture],
+  );
   const atmImmersive = Boolean(activeAtm && atmImmersiveReady);
   const activeSmsBooth = useMemo(
     () => furniture.find((item) => item.type === "sms_booth") ?? null,
@@ -3005,6 +3102,7 @@ export function RetroOffice3D({
       (activeQaTerminalUid || (qaTestingAgentId && qaCommandArrived)),
     ) && qaImmersiveReady;
   const standupImmersive = Boolean(standupBoardOpen && standupMeeting);
+  const kanbanImmersive = Boolean(activeKanbanBoard);
   const immersiveOverlayActive =
     monitorImmersive ||
     atmImmersive ||
@@ -3048,6 +3146,24 @@ export function RetroOffice3D({
     selectedItem?.type === "desk_cubicle"
       ? (deskAssignmentByDeskUid[selectedItem._uid] ?? "")
       : "";
+  const selectedDeskActionItem = useMemo(
+    () =>
+      deskActionUid
+        ? (furniture.find(
+            (item) => item._uid === deskActionUid && item.type === "desk_cubicle",
+          ) ?? null)
+        : null,
+    [deskActionUid, furniture],
+  );
+  const selectedDeskActionAssignedAgentId =
+    selectedDeskActionItem ? (deskAssignmentByDeskUid[selectedDeskActionItem._uid] ?? "") : "";
+  const selectedDeskActionAssignedAgent = useMemo(
+    () =>
+      selectedDeskActionAssignedAgentId
+        ? (agents.find((agent) => agent.id === selectedDeskActionAssignedAgentId) ?? null)
+        : null,
+    [agents, selectedDeskActionAssignedAgentId],
+  );
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -3194,7 +3310,7 @@ export function RetroOffice3D({
       !activeGithubTerminalUid &&
       !activeQaTerminalUid
     ) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
   }, [
     activeAtmUid,
@@ -3223,7 +3339,7 @@ export function RetroOffice3D({
       !activeGithubTerminalUid &&
       !activeQaTerminalUid
     ) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
   }, [
     activeAtmUid,
@@ -3830,7 +3946,7 @@ export function RetroOffice3D({
         ? `agent:${smsBoothAgentId}`
         : null;
     if (!activeViewKey && prevSmsBoothViewRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!activeViewKey || !activeSmsBooth) {
       prevSmsBoothViewRef.current = activeViewKey;
@@ -3978,7 +4094,7 @@ export function RetroOffice3D({
         ? `agent:${phoneBoothAgentId}`
         : null;
     if (!activeViewKey && prevPhoneBoothViewRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!activeViewKey || !activePhoneBooth) {
       prevPhoneBoothViewRef.current = activeViewKey;
@@ -4125,7 +4241,7 @@ export function RetroOffice3D({
 
   useEffect(() => {
     if (!monitorAgentId && prevMonitorAgentIdRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!monitorAgentId || !activeMonitorComputer) {
       prevMonitorAgentIdRef.current = monitorAgentId;
@@ -4155,6 +4271,17 @@ export function RetroOffice3D({
   }, [activeAtm, activeAtmUid]);
 
   useEffect(() => {
+    if (activeKanbanUid && !activeKanbanBoard) {
+      const timer = window.setTimeout(() => {
+        setActiveKanbanUid(null);
+      }, 0);
+      return () => {
+        window.clearTimeout(timer);
+      };
+    }
+  }, [activeKanbanBoard, activeKanbanUid]);
+
+  useEffect(() => {
     if (activeGithubTerminalUid && !activeGithubTerminal) {
       const timer = window.setTimeout(() => {
         setActiveGithubTerminalUid(null);
@@ -4178,7 +4305,7 @@ export function RetroOffice3D({
 
   useEffect(() => {
     if (!activeAtmUid && prevAtmUidRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!activeAtmUid || !activeAtm) {
       prevAtmUidRef.current = activeAtmUid;
@@ -4202,13 +4329,17 @@ export function RetroOffice3D({
   }, [activeAtm, activeAtmUid]);
 
   useEffect(() => {
+    prevKanbanUidRef.current = activeKanbanUid;
+  }, [activeKanbanUid]);
+
+  useEffect(() => {
     const activeViewKey = activeGithubTerminalUid
       ? `manual:${activeGithubTerminalUid}`
       : githubReviewAgentId && githubCommandArrived
         ? `agent:${githubReviewAgentId}`
         : null;
     if (!activeViewKey && prevGithubViewRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!activeViewKey || !activeGithubTerminal) {
       prevGithubViewRef.current = activeViewKey;
@@ -4243,7 +4374,7 @@ export function RetroOffice3D({
         ? `agent:${qaTestingAgentId}`
         : null;
     if (!activeViewKey && prevQaViewRef.current) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
     if (!activeViewKey || !activeQaTerminal) {
       prevQaViewRef.current = activeViewKey;
@@ -4300,12 +4431,51 @@ export function RetroOffice3D({
     [deskByAgentRef, furniture],
   );
 
+  const openKanbanBoard = useCallback(
+    (item: FurnitureItem | null) => {
+      if (!item || item.type !== "kanban_board") return;
+      if (!taskManagerEnabled) {
+        setActiveKanbanUid(null);
+        onKanbanInteract?.();
+        return;
+      }
+      setFollowAgentId(null);
+      setActiveAtmUid(null);
+      setActiveGithubTerminalUid(null);
+      setActiveQaTerminalUid(null);
+      if (manualSmsBoothOpen) {
+        closeManualSmsBoothView();
+      }
+      if (manualPhoneBoothOpen) {
+        closeManualPhoneBoothView();
+      }
+      onMonitorSelect?.(null);
+      setActiveKanbanUid(item._uid);
+    },
+    [
+      closeManualPhoneBoothView,
+      closeManualSmsBoothView,
+      manualPhoneBoothOpen,
+      manualSmsBoothOpen,
+      onMonitorSelect,
+      onKanbanInteract,
+      taskManagerEnabled,
+    ],
+  );
+
   // E3 Idea 2: click a desk to send its assigned agent to walk and sit there.
   const handleDeskClick = useCallback(
     (uid: string) => {
       if (editMode) return;
       const item = furniture.find((f) => f._uid === uid);
       if (!item) return;
+      if (item.type !== "desk_cubicle") {
+        setDeskActionUid(null);
+        setDeskAssignPickerOpen(false);
+      }
+      if (item.type !== "kanban_board" && activeKanbanUid) {
+        setActiveKanbanUid(null);
+      }
       if (item.type !== "sms_booth" && manualSmsBoothOpen) {
         closeManualSmsBoothView();
       }
@@ -4397,6 +4567,7 @@ export function RetroOffice3D({
       }
       if (item.type === "atm") {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveGithubTerminalUid(null);
         setActiveQaTerminalUid(null);
         onMonitorSelect?.(null);
@@ -4405,6 +4576,7 @@ export function RetroOffice3D({
       }
       if (item.type === "sms_booth") {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveAtmUid(null);
         setActiveGithubTerminalUid(null);
         setActiveQaTerminalUid(null);
@@ -4422,6 +4594,7 @@ export function RetroOffice3D({
       }
       if (item.type === "phone_booth") {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveAtmUid(null);
         setActiveGithubTerminalUid(null);
         setActiveQaTerminalUid(null);
@@ -4443,6 +4616,7 @@ export function RetroOffice3D({
       }
       if (item.type === "server_terminal") {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveAtmUid(null);
         setActiveQaTerminalUid(null);
         onMonitorSelect?.(null);
@@ -4451,6 +4625,7 @@ export function RetroOffice3D({
       }
       if (item.type === "server_rack") {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveAtmUid(null);
         setActiveQaTerminalUid(null);
         onMonitorSelect?.(null);
@@ -4463,12 +4638,17 @@ export function RetroOffice3D({
         item.type === "test_bench"
       ) {
         setFollowAgentId(null);
+        setActiveKanbanUid(null);
         setActiveAtmUid(null);
         setActiveGithubTerminalUid(null);
         onMonitorSelect?.(null);
         setActiveQaTerminalUid(
           item.type === "qa_terminal" ? uid : (qaTerminal?._uid ?? uid),
         );
+        return;
+      }
+      if (item.type === "kanban_board") {
+        openKanbanBoard(item);
         return;
       }
       if (
@@ -4481,9 +4661,9 @@ export function RetroOffice3D({
         onStandupStartRequested?.();
         return;
       }
-      const agentId = resolveAgentIdForDeskItem(uid);
-      if (!agentId) return;
       if (item.type === "computer") {
+        const agentId = resolveAgentIdForDeskItem(uid);
+        if (!agentId) return;
         setActiveGithubTerminalUid(null);
         setActiveQaTerminalUid(null);
         setActiveAtmUid(null);
@@ -4491,21 +4671,8 @@ export function RetroOffice3D({
         return;
       }
       if (item.type !== "desk_cubicle") return;
-      setActiveGithubTerminalUid(null);
-      setActiveQaTerminalUid(null);
-      setActiveAtmUid(null);
-      const agent = renderAgentLookupRef.current.get(agentId);
-      if (!agent) return;
-      const tx = item.x + 40;
-      const ty = item.y + 40;
-      const path = planPath(agent.x, agent.y, tx, ty);
-      // Mutate the render agent ref directly so the tick loop picks it up.
-      Object.assign(agent, {
-        targetX: tx,
-        targetY: ty,
-        path,
-        state: "walking",
-      });
+      setDeskActionUid(item._uid);
+      setDeskAssignPickerOpen(false);
     },
     [
       closeManualSmsBoothView,
@@ -4514,12 +4681,11 @@ export function RetroOffice3D({
       furniture,
       manualSmsBoothOpen,
       manualPhoneBoothOpen,
+      activeKanbanUid,
+      openKanbanBoard,
       onMonitorSelect,
       onStandupStartRequested,
-      planPath,
       qaTerminal,
-      renderAgentsRef,
-      renderAgentLookupRef,
       resolveAgentIdForDeskItem,
       serverTerminal,
       voiceRepliesEnabled,
@@ -4527,6 +4693,36 @@ export function RetroOffice3D({
       voiceRepliesVoiceId,
     ],
   );
+
+  const sendAssignedAgentToDesk = useCallback(
+    (deskItem: FurnitureItem) => {
+      const agentId = deskAssignmentByDeskUid[deskItem._uid];
+      if (!agentId) return;
+      const agent = renderAgentLookupRef.current.get(agentId);
+      if (!agent) return;
+      const tx = deskItem.x + 40;
+      const ty = deskItem.y - 5;
+      const path = planPath(agent.x, agent.y, tx, ty);
+      Object.assign(agent, {
+        targetX: tx,
+        targetY: ty,
+        path,
+        state: "walking",
+      });
+    },
+    [deskAssignmentByDeskUid, planPath, renderAgentLookupRef],
+  );
+
+  const handleGoToDesk = useCallback(() => {
+    if (!selectedDeskActionItem) return;
+    setActiveKanbanUid(null);
+    setActiveGithubTerminalUid(null);
+    setActiveQaTerminalUid(null);
+    setActiveAtmUid(null);
+    sendAssignedAgentToDesk(selectedDeskActionItem);
+    setDeskActionUid(null);
+    setDeskAssignPickerOpen(false);
+  }, [selectedDeskActionItem, sendAssignedAgentToDesk]);
 
   const handleFurniturePointerOver = useCallback(
     (uid: string) => setHoverUid(uid),
@@ -4542,7 +4738,7 @@ export function RetroOffice3D({
       !activeGithubTerminalUid &&
       !activeQaTerminalUid
     ) {
-      cameraPresetRef.current = CAMERA_PRESET_MAP.overview;
+      cameraPresetRef.current = overviewPresetRef.current;
     }
   }, [
     activeAtmUid,
@@ -4572,6 +4768,7 @@ export function RetroOffice3D({
       hoveredItem?.type === "device_rack" ||
       hoveredItem?.type === "test_bench" ||
       hoveredItem?.type === "server_terminal" ||
+      hoveredItem?.type === "kanban_board" ||
       hoveredMeetingTable
         ? "pointer"
         : "";
@@ -4744,7 +4941,11 @@ export function RetroOffice3D({
         setHoverUid(null);
         setGhostPos(null);
         setWallDrawStart(null);
-      } else setDrawerOpen(true);
+      } else {
+        setDrawerOpen(true);
+        setDeskActionUid(null);
+        setDeskAssignPickerOpen(false);
+      }
       return !prev;
     });
   };
@@ -4884,6 +5085,16 @@ export function RetroOffice3D({
     return () => window.removeEventListener("pointerdown", dismiss);
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!deskActionUid) return;
+    const dismiss = () => {
+      setDeskActionUid(null);
+      setDeskAssignPickerOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    return () => window.removeEventListener("pointerdown", dismiss);
+  }, [deskActionUid]);
+
   // New Idea 3: show speech bubble based on reply length.
   useEffect(() => {
     if (feedEvents.length === 0) return;
@@ -4948,16 +5159,36 @@ export function RetroOffice3D({
   }, [spotlightAgentId]);
 
   // Camera constants.
-  const CAM_POS = DISTRICT_CAMERA_POSITION;
   const LOCAL_CAMERA_TARGET = useMemo(
     () =>
       toWorld(LOCAL_OFFICE_CANVAS_WIDTH / 2, LOCAL_OFFICE_CANVAS_HEIGHT / 2),
     [],
   );
+  const CAM_POS = useMemo<[number, number, number]>(() => {
+    if (remoteOfficeEnabled) return DISTRICT_CAMERA_POSITION;
+    return [
+      LOCAL_CAMERA_TARGET[0] + (DISTRICT_CAMERA_POSITION[0] - DISTRICT_CAMERA_TARGET[0]),
+      LOCAL_CAMERA_TARGET[1] + (DISTRICT_CAMERA_POSITION[1] - DISTRICT_CAMERA_TARGET[1]),
+      LOCAL_CAMERA_TARGET[2] + (DISTRICT_CAMERA_POSITION[2] - DISTRICT_CAMERA_TARGET[2]),
+    ];
+  }, [remoteOfficeEnabled, LOCAL_CAMERA_TARGET]);
   const cameraTarget = remoteOfficeEnabled
     ? DISTRICT_CAMERA_TARGET
     : LOCAL_CAMERA_TARGET;
   const cameraZoom = remoteOfficeEnabled ? DISTRICT_CAMERA_ZOOM : 56;
+  const overviewPresetRef = useRef({ pos: CAM_POS, target: cameraTarget, zoom: cameraZoom });
+  overviewPresetRef.current = { pos: CAM_POS, target: cameraTarget, zoom: cameraZoom };
+  const lastOfficeCenterSignalRef = useRef(officeCenterSignal);
+
+  useEffect(() => {
+    cameraPresetRef.current = overviewPresetRef.current;
+  }, [CAM_POS, cameraTarget, cameraZoom]);
+
+  useEffect(() => {
+    if (officeCenterSignal === lastOfficeCenterSignalRef.current) return;
+    lastOfficeCenterSignalRef.current = officeCenterSignal;
+    cameraPresetRef.current = overviewPresetRef.current;
+  }, [officeCenterSignal, CAM_POS, cameraTarget, cameraZoom]);
 
   return (
     <div className="relative w-full h-full bg-[#1a1008] font-mono text-white overflow-hidden">
@@ -4999,13 +5230,14 @@ export function RetroOffice3D({
               if (drag.kind === "moving") setDrag({ kind: "idle" });
             }}
           >
-            {/* Ensure camera looks at origin after mount. */}
+            {/* Ensure camera looks at the active office target after mount. */}
             <CameraRig target={cameraTarget} />
             <AdaptiveDprController />
 
             {/* Orbit / pan / zoom controls — disabled while follow cam is active or while editing furniture. */}
             <OrbitControls
               ref={orbitRef}
+              target={cameraTarget}
               enabled={followAgentId === null && (!editMode || spaceDown)}
               enableDamping
               dampingFactor={0.08}
@@ -5227,7 +5459,9 @@ export function RetroOffice3D({
                     onPointerDown={handleFurniturePointerDown}
                     onPointerOver={handleFurniturePointerOver}
                     onPointerOut={handleFurniturePointerOut}
-                    onClick={editMode ? handleDeskClick : () => onJukeboxInteract?.()}
+                    onClick={
+                      editMode ? handleDeskClick : () => onJukeboxInteract?.()
+                    }
                   />
                 ) : item.type === "sms_booth" ? (
                   <InteractiveSmsBoothModel
@@ -5484,6 +5718,11 @@ export function RetroOffice3D({
                     isSelected={item._uid === selectedUid}
                     isHovered={item._uid === hoverUid}
                     editMode={editMode}
+                    kanbanTaskCount={
+                      item.type === "kanban_board"
+                        ? kanbanDeskTaskCount
+                        : undefined
+                    }
                     onPointerDown={handleFurniturePointerDown}
                     onPointerOver={handleFurniturePointerOver}
                     onPointerOut={handleFurniturePointerOut}
@@ -5497,7 +5736,7 @@ export function RetroOffice3D({
               <ReadOnlyFurnitureClone furniture={remoteLayoutFurniture} />
             ) : null}
 
-          {/* Removed standalone Jukebox as it's now in the furniture loop */}
+            {/* Removed standalone Jukebox as it's now in the furniture loop */}
 
             {/* Agents — purely imperative, driven by renderAgentsRef inside useFrame. */}
             {sceneAgents.map((agent) => {
@@ -5543,13 +5782,6 @@ export function RetroOffice3D({
             })}
 
             <ScenePingPongBall agentsRef={renderAgentsRef} />
-
-            {/* Idea 7: Desk nameplates — small labels showing assigned agent above each desk. */}
-            <DeskNameplateOverlay
-              deskLocations={deskLocations}
-              agents={agents}
-              deskByAgentRef={deskByAgentRef}
-            />
 
             {/* New Idea 5: Agent color trails while walking. */}
             {trailMode ? (
@@ -5675,11 +5907,22 @@ export function RetroOffice3D({
                   ? "Gathering in meeting room."
                   : standupMeeting.phase === "in_progress"
                     ? `Speaking: ${standupSpeakerCard?.agentName ?? "Team"}`
-                    : "Standup complete."}
+                    : ""}
               </div>
               <div className="mt-1 font-mono text-[10px] text-white/50">
                 {standupMeeting.arrivedAgentIds.length}/
                 {standupMeeting.participantOrder.length} arrived
+              </div>
+            </button>
+          ) : null}
+          {kanbanBoardItem ? (
+            <button
+              type="button"
+              onClick={() => openKanbanBoard(kanbanBoardItem)}
+              className="rounded-xl border border-cyan-500/22 bg-[#09111a]/90 px-3 py-2 text-left shadow-lg backdrop-blur-sm transition-colors hover:border-cyan-300/40 hover:bg-[#0d1b28]/95"
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200/80">
+                Kanban board
               </div>
             </button>
           ) : null}
@@ -6039,6 +6282,84 @@ export function RetroOffice3D({
           );
         })()}
 
+      {!immersiveOverlayActive && !editMode && selectedDeskActionItem ? (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+          <div
+            className="pointer-events-auto w-[320px] rounded-xl border border-amber-800/25 bg-[#120e08]/95 p-3 shadow-2xl backdrop-blur-sm"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-500/70">
+                Desk actions
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeskActionUid(null);
+                  setDeskAssignPickerOpen(false);
+                }}
+                className="rounded border border-amber-900/25 px-2 py-0.5 text-[10px] text-amber-200/70 transition-colors hover:border-amber-600/40 hover:text-amber-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="mt-2 rounded-md border border-amber-900/20 bg-[#1a120b] px-2.5 py-2 text-[11px] text-amber-100/90">
+              {selectedDeskActionAssignedAgent ? (
+                <>
+                  Assigned agent:{" "}
+                  <span className="font-semibold text-white">
+                    {selectedDeskActionAssignedAgent.name}
+                  </span>
+                  .
+                </>
+              ) : (
+                "Assigned agent: Unassigned."
+              )}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleGoToDesk}
+                disabled={!selectedDeskActionAssignedAgentId}
+                className="rounded-md border border-emerald-700/35 bg-emerald-900/20 px-2 py-2 text-[11px] font-semibold text-emerald-100 transition-colors hover:bg-emerald-800/30 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Go to desk
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeskAssignPickerOpen((prev) => !prev)}
+                disabled={!onDeskAssignmentChange}
+                className="rounded-md border border-amber-700/35 bg-amber-900/18 px-2 py-2 text-[11px] font-semibold text-amber-100 transition-colors hover:bg-amber-800/30 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Assign agent
+              </button>
+            </div>
+            {deskAssignPickerOpen && onDeskAssignmentChange ? (
+              <div className="mt-2">
+                <select
+                  value={selectedDeskActionAssignedAgentId}
+                  onChange={(event) => {
+                    const nextAgentId = event.target.value.trim();
+                    onDeskAssignmentChange(
+                      selectedDeskActionItem._uid,
+                      nextAgentId || null,
+                    );
+                  }}
+                  className="w-full rounded-md border border-amber-800/25 bg-[#1c1610] px-2 py-2 text-[11px] text-amber-100 outline-none transition-colors focus:border-amber-500/50"
+                >
+                  <option value="">Unassigned desk.</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {/* Follow cam HUD — shown while a third-person follow camera is active. */}
       {!immersiveOverlayActive &&
         followAgentId &&
@@ -6120,6 +6441,28 @@ export function RetroOffice3D({
         <StandupImmersiveScreen
           meeting={standupMeeting}
           onClose={closeStandupBoard}
+        />
+      ) : null}
+
+      {kanbanImmersive ? (
+        <KanbanImmersiveScreen
+          agents={taskBoardAgents}
+          cardsByStatus={taskBoardCardsByStatus}
+          selectedCard={taskBoardSelectedCard}
+          activeRuns={taskBoardActiveRuns}
+          cronJobs={taskBoardCronJobs}
+          cronLoading={taskBoardCronLoading}
+          cronError={taskBoardCronError}
+          taskCaptureDebug={taskBoardCaptureDebug}
+          onCreateCard={() => onTaskBoardCreateCard?.()}
+          onMoveCard={(cardId, status) => onTaskBoardMoveCard?.(cardId, status)}
+          onSelectCard={(cardId) => onTaskBoardSelectCard?.(cardId)}
+          onUpdateCard={(cardId, patch) =>
+            onTaskBoardUpdateCard?.(cardId, patch)
+          }
+          onDeleteCard={(cardId) => onTaskBoardDeleteCard?.(cardId)}
+          onRefreshCronJobs={() => onTaskBoardRefreshCronJobs?.()}
+          onClose={() => setActiveKanbanUid(null)}
         />
       ) : null}
 
